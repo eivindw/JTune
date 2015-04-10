@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python2.7
 # -*- coding: utf-8 -*-
 
 """
@@ -1182,7 +1182,17 @@ def _show_recommendations(young_gc_times=None, full_gc_times=None,
                 recommended_max_heap_size / 1024.0 / 1024.0),
             textwrap_offset)) + "\n")
 
-
+#TODO - not working yet        
+def seconds(timestamp):
+    try:
+        start = timestamp.rindex(":") + 1
+        end = timestamp.find(".")
+        if end == -1:
+            end = len(timestamp)
+        return timestamp[start:end]
+    except ValueError:
+        return ""
+        
 def get_proc_info(pid=None):
     """Return a data structure with details of the given process id
 
@@ -1196,10 +1206,28 @@ def get_proc_info(pid=None):
         cpu_ticks_per_sec = int(os.sysconf(os.sysconf_names['SC_CLK_TCK']))
         bytes_per_page = resource.getpagesize()
 
-        for line in liverun("readlink /proc/{0}/cwd".format(pid)):
-            details['proc_cwd'] = line.strip()
+        for line in liverun("lsof -a -p {0} -d cwd -Fn".format(pid)):
+            if line.startswith("n/"):
+                details['proc_cwd'] = line.strip()[1:]
+        
+        #for line in liverun("readlink /proc/{0}/cwd".format(pid)):
+        #    details['proc_cwd'] = line.strip()
 
-        with open("/proc/{0}/cmdline".format(pid), "r") as _file:
+        for psline in liverun("ps -ax {0}".format(pid)):
+            if psline.startswith(str(pid)):
+                for line in psline.split():
+                    if "-Xloggc" in line:
+                        gc_path = line.split(":")[1]
+
+                        if gc_path.startswith("/"):
+                            details['gc_log_path'] = gc_path
+                        else:
+                            details['gc_log_path'] = details['proc_cwd'] + "/" + gc_path
+
+                    elif "/bin/java" in line:
+                        details['java_path'] = os.path.dirname(line)
+
+        """with open("/proc/{0}/cmdline".format(pid), "r") as _file:
             for blob in _file:
                 for line in blob.split("\0"):
                     if "-Xloggc" in line:
@@ -1212,18 +1240,52 @@ def get_proc_info(pid=None):
 
                     elif "/bin/java" in line:
                         details['java_path'] = os.path.dirname(line)
+        """
 
-        with open("/proc/uptime".format(pid), "r") as _file:
+        for uptime in liverun("sysctl -n kern.boottime"):
+            uptimeInt = int(uptime.split()[3][:10])
+            for systime in liverun("date +%s"):
+                details['sys_uptime_seconds'] = int(systime) - uptimeInt
+                break
+        
+        """with open("/proc/uptime".format(pid), "r") as _file:
             for line in _file:
                 details['sys_uptime_seconds'] = Decimal(line.split()[0])
                 break
+        """
 
-        with open("/proc/{0}/stat".format(pid), "r") as _file:
+        for psinfo in liverun("ps -o utime,stime,etime,vsz,rss {0}".format(pid)):
+            if ":" in psinfo:
+                field = psinfo.split()
+
+                utime_ticks = int(seconds(field[0]))
+                stime_ticks = int(seconds(field[1]))
+                #threads: ps -M PID | grep -v USER | wc -l
+                num_threads = 20
+                uptime_ticks = int(seconds(field[2]))
+                vsize_bytes = int(field[3])
+                rss_bytes = int(field[4]) * bytes_per_page
+
+                #details['proc_uptime_seconds'] = uptime_ticks (details['sys_uptime_seconds']) - Decimal(
+                #    str(uptime_ticks / float(cpu_ticks_per_sec)))
+                #details['proc_utime_seconds'] = utime_ticks / Decimal(cpu_ticks_per_sec)
+                #details['proc_stime_seconds'] = stime_ticks / Decimal(cpu_ticks_per_sec)
+                details['proc_uptime_seconds'] = Decimal(uptime_ticks)
+                details['proc_utime_seconds'] = Decimal(utime_ticks)
+                details['proc_stime_seconds'] = Decimal(stime_ticks)
+                details['proc_rss_bytes'] = rss_bytes
+                details['proc_vsize_bytes'] = vsize_bytes
+                details['num_threads'] = num_threads
+
+                break
+
+        """with open("/proc/{0}/stat".format(pid), "r") as _file:
             for line in _file:
                 field = line.split()
 
                 utime_ticks = int(field[13])
                 stime_ticks = int(field[14])
+                #threads: ps -M PID | grep -v USER | wc -l
                 num_threads = int(field[19])
                 uptime_ticks = int(field[21])
                 vsize_bytes = int(field[22])
@@ -1238,6 +1300,7 @@ def get_proc_info(pid=None):
                 details['num_threads'] = num_threads
 
                 break
+        """
 
         for line in liverun("{0}/java -version".format(details['java_path'])):
             if "Runtime Environment" in line:
@@ -1417,6 +1480,8 @@ def run_jstat(pid=None, java_path=None, no_jstat_output=None,
 
     try:
         for line in liverun(cmd):
+            if "Picked up" in line:
+                continue
             timestamp = datetime.datetime.now()
             line = line.strip()
 
@@ -1856,9 +1921,9 @@ if __name__ == "__main__":
         try:
             proc_details = get_proc_info(cmd_args.pid)
             java_path, proc_uptime = proc_details['java_path'], proc_details['proc_uptime_seconds']
-        except (TypeError, KeyError):
+        except (TypeError, KeyError) as e:
             logger.error(
-                "I was not able to get the process data for pid {0}. Exiting.".format(cmd_args.pid))
+                "I was not able to get the process data for pid {0}. Exiting. {1}".format(cmd_args.pid, e))
             sys.exit(1)
 
         ###########################################
